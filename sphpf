@@ -1,0 +1,311 @@
+#!/bin/sh
+
+## START: GLOBAL VARIABLES (DO NOT TOUCH)
+# Set initial verbosity level (Errors and above)
+SCRIPT_VERBOSITY=4
+DO_DRY_RUN=0
+# Detected PHP versions
+declare -a PHP_VERSIONS_AVAILABLE
+declare -a LOG_LEVELS
+LOG_LEVELS=([0]="emerg" [1]="alert" [2]="crit" [3]="err" [4]="warning" [5]="notice" [6]="info" [7]="debug")
+LAUNCHAGENTS_DIR="/Users/$(id -u -n)/Library/LaunchAgents"
+## END: GLOBAL VARIABLES (DO NOT TOUCH)
+
+## START: Utility functions (DO NOT TOUCH)
+# Log utility function
+function logMsg() {
+  local LEVEL=${1}
+  shift
+  if [ ${SCRIPT_VERBOSITY} -ge ${LEVEL} ]; then
+    if [ -t 0 ]; then
+      # seems we are in an interactive shell
+      echo "[${LOG_LEVELS[$LEVEL]}]" "$@" >&2
+    else
+      # seems we are in a cron job
+      logger -p "${LOG_LEVELS[$LEVEL]}" -t "$0[$$]" -- "$*"
+    fi
+  fi
+}
+
+# Populate global array with PHP versions if not already populated
+function populatePhpVersions() {
+    if [ ${#PHP_VERSIONS_AVAILABLE[@]} -eq 0 ]; then
+        logMsg 6 "Detecting system PHP versions"
+        PHP_VERSIONS_AVAILABLE=($(brew list | grep '^php[0-9]\{2,\}$' | grep -o -E '[0-9]+'))
+    else
+        logMsg 7 "PHP versions already loaded, using current data"
+    fi
+}
+
+# Command usage text
+function show_usage() {
+    populatePhpVersions
+    csvPhpList=
+    if [ ${#PHP_VERSIONS_AVAILABLE[@]} -gt 0 ]; then
+        csvPhpList=$(IFS=, ; echo "${PHP_VERSIONS_AVAILABLE[*]}")
+    fi
+
+    echo "Usage: $(basename $0) [OPTIONS] <phpversion>"
+    echo
+    echo "Available options:"
+    echo "  -h  This message"
+    echo "  -t  Trial run (make no changes - display commands)"
+    echo "  -v  Increase verbosity level can be repeated to increase further"
+    echo
+    if [ ! -z "$csvPhpList" ];then
+        echo "Detected PHP versions:"
+        echo "  $csvPhpList"
+    else
+        echo "WARNING: No versions of PHP detected as installed"
+    fi
+}
+## END: Utility functions (DO NOT TOUCH)
+
+## START: Parse run options (DO NOT TOUCH)
+while getopts "tvh" OPTION; do
+  case "$OPTION" in
+    t)
+      DO_DRY_RUN=1
+      ;;
+    v)
+      #each -v should increase verbosity level
+      SCRIPT_VERBOSITY=$(($SCRIPT_VERBOSITY+1))
+      if [ $SCRIPT_VERBOSITY -gt 7 ]; then
+        SCRIPT_VERBOSITY=7
+      fi
+      ;;
+    h)
+      show_usage
+      exit 0
+      ;;
+    *)
+      echo "Unrecognised option provided" 1>&2
+      echo
+      show_usage
+      exit 2
+      ;;
+    esac
+done
+shift $((OPTIND-1))
+## END: Parse run options (DO NOT TOUCH)
+
+echo "Starting process, please wait..."
+
+populatePhpVersions
+
+if [ ${#PHP_VERSIONS_AVAILABLE[@]} -eq 0 ]; then
+    echo "No versions of PHP installed via brew can be found, this script can not be used." 1>&2
+    exit 1
+fi
+
+# Check if command was ran as root.
+if [ $(id -u) -eq 0 ]; then
+    echo "The command $(basename $0) should *not be executed as root* or using sudo." 1>&2
+    echo "When a service requires root access, you will be prompted for a password as needed." 1>&2
+    exit 1
+fi
+
+logMsg 7 "Checking version target is present and available"
+# If a target version isn't provided - print usage
+if [ $# -ne 1 ]; then
+    echo "No PHP Version provided!" 1>&2
+    echo
+    show_usage
+    exit 2
+fi
+
+# Store target version
+TARGET_PHP_VERSION="$1"
+
+# Check target exists
+TARGET_FOUND=0
+for version_requested in "${PHP_VERSIONS_AVAILABLE[@]}"; do
+    [[ $TARGET_PHP_VERSION = "$version_requested" ]] && TARGET_FOUND=1
+done
+if [ $TARGET_FOUND -eq 0 ];then
+    echo "Target PHP Version not found!" 1>&2
+    echo
+    show_usage
+    exit 2
+fi
+
+TARGET_PHP_MAJOR=${TARGET_PHP_VERSION:0:1}
+TARGET_PHP_MINOR=${TARGET_PHP_VERSION:1:1}
+
+logMsg 6 "Requested version: $TARGET_PHP_VERSION"
+
+logMsg 7 "Detecting currently active PHP versions (fpm & command line)"
+CURRENT_CMDLINE_VERSION=$(php -r "error_reporting(0); echo str_replace('.', '', substr(phpversion(), 0, 3));")
+CURRENT_FPM_VERSION=$(launchctl list | grep 'php[0-9]' | awk -F'[^0-9]*' '{print $3}')
+
+if [ -z "$CURRENT_CMDLINE_VERSION" ]; then
+    echo "We had trouble detecting the current command line version of PHP, exiting:" 1>&2
+    echo "  Command line version: N/A" 1>&2
+    if [ -z "$CURRENT_FPM_VERSION" ]; then
+        echo "  FPM version:          N/A" 1>&2
+    else
+        echo "  FPM version:          $CURRENT_FPM_VERSION" 1>&2
+    fi
+    exit 1
+fi
+
+if [ "$CURRENT_CMDLINE_VERSION" != "$CURRENT_FPM_VERSION" ];then
+    logMsg 5 "Command line & FPM versions are out of sync: $CURRENT_CMDLINE_VERSION vs $CURRENT_FPM_VERSION respectively"
+else
+    logMsg 7 "Command line and FPM versions are equal"
+fi
+
+CURRENT_CMDLINE_MAJOR=${CURRENT_CMDLINE_VERSION:0:1}
+CURRENT_CMDLINE_MINOR=${CURRENT_CMDLINE_VERSION:1:1}
+
+logMsg 6 "Found PHP versions:"
+logMsg 6 "  Command line version: $CURRENT_CMDLINE_VERSION"
+if [ -z "$CURRENT_FPM_VERSION" ]; then
+    logMsg 6 "  FPM version:          N/A"
+else
+    logMsg 6 "  FPM version:          $CURRENT_FPM_VERSION"
+    CURRENT_FPM_MAJOR=${CURRENT_FPM_VERSION:0:1}
+    CURRENT_FPM_MINOR=${CURRENT_FPM_VERSION:1:1}
+fi
+
+if [ "$CURRENT_CMDLINE_VERSION" = "$TARGET_PHP_VERSION" ] && [ "$CURRENT_FPM_VERSION" = "$TARGET_PHP_VERSION" ];then
+    echo "Detected that target version is already active."
+    echo
+    while true; do
+        read -r -p "Continue anyway? (y/n) " yn
+        case $yn in
+            [Yy]* ) echo && break;;
+            [Nn]* ) echo && exit 0;;
+        esac
+    done
+fi
+
+declare -a CURRENT_PHP_PACKAGES
+declare -a TARGET_PHP_PACKAGES
+CURRENT_PHP_PACKAGES=($(brew list | grep php$CURRENT_CMDLINE_VERSION))
+TARGET_PHP_PACKAGES=($(brew list | grep php$TARGET_PHP_VERSION))
+
+packages_to_unlink=$(IFS=' '; echo "${CURRENT_PHP_PACKAGES[*]}")
+packages_to_link=$(IFS=' '; echo "${TARGET_PHP_PACKAGES[*]}")
+
+if [ $DO_DRY_RUN -eq 1 ];then
+    echo "brew unlink $packages_to_unlink"
+    echo "brew link --force $packages_to_link"
+else
+    if ! brew unlink $packages_to_unlink >/dev/null 2>&1; then
+        echo "We had trouble unlinking the package set:" 1>&2
+        echo "  $packages_to_unlink" 1>&2
+        exit 1
+    else
+        logMsg 6 "Successfully unlinked:"
+        logMsg 6 "  $packages_to_unlink"
+    fi
+
+    if ! brew link --force $packages_to_link >/dev/null 2>&1; then
+        echo "We had trouble linking the package set:" 1>&2
+        echo "  $packages_to_link" 1>&2
+        exit 1
+    else
+        logMsg 6 "Successfully linked:"
+        logMsg 6 "  $packages_to_link"
+    fi
+fi
+
+CUR_PHP_FPM_PLIST_NAME=
+CUR_PHP_FPM_PLIST_LINK=
+if [ ! -z "$CURRENT_FPM_VERSION" ]; then
+    CUR_PHP_FPM_PLIST_NAME="homebrew.mxcl.php$CURRENT_FPM_VERSION.plist"
+    CUR_PHP_FPM_PLIST_LINK="$LAUNCHAGENTS_DIR/$CUR_PHP_FPM_PLIST_NAME"
+    logMsg 7 "Current PHP plist location determined as:"
+    logMsg 7 "  $CUR_PHP_FPM_PLIST_LINK"
+fi
+
+TARGET_PHP_FPM_PLIST_NAME="homebrew.mxcl.php$TARGET_PHP_VERSION.plist"
+TARGET_PHP_FPM_PLIST_LINK="$LAUNCHAGENTS_DIR/$TARGET_PHP_FPM_PLIST_NAME"
+logMsg 7 "Target PHP plist destination determined as:"
+logMsg 7 "  $TARGET_PHP_FPM_PLIST_LINK"
+
+TARGET_PHP_FPM_PLIST_FILE_SOURCE="/usr/local/opt/php$TARGET_PHP_VERSION/$TARGET_PHP_FPM_PLIST_NAME"
+logMsg 7 "Target PHP source plist location determined as:"
+logMsg 7 "  $TARGET_PHP_FPM_PLIST_FILE_SOURCE"
+
+if [ ! -f $TARGET_PHP_FPM_PLIST_FILE_SOURCE ];then
+    echo "The source plink for the target PHP version ($TARGET_PHP_VERSION) couldn't be found! Expected:" 1>&2
+    echo "  $TARGET_PHP_FPM_PLIST_FILE_SOURCE" 1>&2
+    echo "Can not continue!" 1>&2
+    exit 1
+fi
+
+if [ ! -z "$CUR_PHP_FPM_PLIST_LINK" ];then
+    if [ $DO_DRY_RUN -eq 1 ];then
+        echo "launchctl unload -w \"$CUR_PHP_FPM_PLIST_LINK\""
+    else
+        if ! launchctl unload -w "$CUR_PHP_FPM_PLIST_LINK" >/dev/null 2>&1; then
+            echo "The current PHP FPM service could not be unloaded from:" 1>&2
+            echo "  $CUR_PHP_FPM_PLIST_LINK" 1>&2
+            echo "Please do it manually and try again." 1>&2
+            exit 1
+        else
+            logMsg 6 "Unlinked current PHP FPM service file:"
+            logMsg 6 "  $CUR_PHP_FPM_PLIST_LINK"
+        fi
+    fi
+fi
+
+logMsg 7 "Clearing all old PHP FPM plists as a precaution before continuing."
+if [ $DO_DRY_RUN -eq 1 ];then
+    echo "rm -f $LAUNCHAGENTS_DIR/homebrew.mxcl.php*.plist"
+else
+    if ! rm -f $LAUNCHAGENTS_DIR/homebrew.mxcl.php*.plist >/dev/null 2>&1; then
+        logMsg 5 "Run of cleanup command: "
+        logMsg 5 "  rm -f $LAUNCHAGENTS_DIR/homebrew.mxcl.php*.plist"
+        logMsg 5 "Failed, this is non critical, but worth being aware of."
+    else
+        logMsg 6 "Cleanup of old PHP FPM plists complete."
+    fi
+fi
+
+logMsg 6 "Linking new PHP FPM plist."
+if [ $DO_DRY_RUN -eq 1 ];then
+    echo "ln -s \"$TARGET_PHP_FPM_PLIST_FILE_SOURCE\" \"$TARGET_PHP_FPM_PLIST_LINK\""
+else
+    if ! ln -s "$TARGET_PHP_FPM_PLIST_FILE_SOURCE" "$TARGET_PHP_FPM_PLIST_LINK" >/dev/null 2>&1; then
+        echo "The target PHP FPM service plist could not be symlinked from:" 1>&2
+        echo "  $TARGET_PHP_FPM_PLIST_FILE_SOURCE" 1>&2
+        echo "To:" 1>&2
+        echo "  $TARGET_PHP_FPM_PLIST_LINK" 1>&2
+        echo "Exiting." 1>&2
+        exit 1
+    else
+        logMsg 7 "Target PHP FPM service plist symlinked from:"
+        logMsg 7 "  $TARGET_PHP_FPM_PLIST_FILE_SOURCE"
+        logMsg 7 "To:"
+        logMsg 7 "  $TARGET_PHP_FPM_PLIST_LINK"
+    fi
+fi
+
+logMsg 6 "Loading new PHP FPM service."
+if [ $DO_DRY_RUN -eq 1 ];then
+    echo "launchctl load -w \"$TARGET_PHP_FPM_PLIST_LINK\""
+else
+    if ! launchctl load -w "$TARGET_PHP_FPM_PLIST_LINK" >/dev/null 2>&1; then
+        echo "The new PHP FPM service plist could not be loaded from:" 1>&2
+        echo "  $TARGET_PHP_FPM_PLIST_LINK" 1>&2
+        echo "Using:" 1>&2
+        echo "  launchctl load -w \"$TARGET_PHP_FPM_PLIST_LINK\"" 1>&2
+        echo "This was the last step in the process, so you could try it again." 1>&2
+        exit 1
+    else
+        logMsg 7 "The new PHP FPM service plist was loaded from:"
+        logMsg 7 "  $TARGET_PHP_FPM_PLIST_LINK"
+        logMsg 7 "Using:"
+        logMsg 7 "  launchctl load -w \"$TARGET_PHP_FPM_PLIST_LINK\""
+    fi
+fi
+
+if [ $DO_DRY_RUN -eq 0 ];then
+    logMsg 6 "Process complete and PHP FPM and the command line should be running $TARGET_PHP_VERSION"
+fi
+echo "All Done!"
+
+exit 0
