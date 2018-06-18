@@ -31,14 +31,14 @@ function logMsg() {
 function populatePhpVersions() {
     if [ ${#PHP_VERSIONS_AVAILABLE[@]} -eq 0 ]; then
         logMsg 6 "Detecting system PHP versions"
-        PHP_VERSIONS_AVAILABLE=($(brew list | grep '^php[0-9]\{2,\}$' | grep -o -E '[0-9]+'))
+        PHP_VERSIONS_AVAILABLE=($(brew ls --versions | grep -oE "(?:php)(?:@\d+.\d+)?(?:\s+)([0-9]+(.[0-9]+(?:[0-9]+)?)?)" | grep -oE "[0-9]+(.[0-9]+)?$" | sort -r))
     else
         logMsg 7 "PHP versions already loaded, using current data"
     fi
 }
 
 # Command usage text
-function show_usage() {
+function showUsage() {
     populatePhpVersions
     csvPhpList=
     if [ ${#PHP_VERSIONS_AVAILABLE[@]} -gt 0 ]; then
@@ -59,6 +59,14 @@ function show_usage() {
         echo "WARNING: No versions of PHP detected as installed"
     fi
 }
+
+function phpMajMinVersionParse() {
+    local RE='[^0-9]*\([0-9]*\)[.]\([0-9]*\)'
+    #MAJOR
+    eval $2=`echo $1 | sed -e "s#$RE#\1#"`
+    #MINOR
+    eval $3=`echo $1 | sed -e "s#$RE#\2#"`
+}
 ## END: Utility functions (DO NOT TOUCH)
 
 ## START: Parse run options (DO NOT TOUCH)
@@ -75,13 +83,13 @@ while getopts "tvh" OPTION; do
       fi
       ;;
     h)
-      show_usage
+      showUsage
       exit 0
       ;;
     *)
       echo "Unrecognised option provided" 1>&2
       echo
-      show_usage
+      showUsage
       exit 2
       ;;
     esac
@@ -110,7 +118,7 @@ logMsg 7 "Checking version target is present and available"
 if [ $# -ne 1 ]; then
     echo "No PHP Version provided!" 1>&2
     echo
-    show_usage
+    showUsage
     exit 2
 fi
 
@@ -125,18 +133,46 @@ done
 if [ $TARGET_FOUND -eq 0 ];then
     echo "Target PHP Version not found!" 1>&2
     echo
-    show_usage
+    showUsage
     exit 2
 fi
 
-TARGET_PHP_MAJOR=${TARGET_PHP_VERSION:0:1}
-TARGET_PHP_MINOR=${TARGET_PHP_VERSION:1:1}
+phpMajMinVersionParse $TARGET_PHP_VERSION TARGET_PHP_MAJOR TARGET_PHP_MINOR
 
 logMsg 6 "Requested version: $TARGET_PHP_VERSION"
+if [ ! -z "$TARGET_PHP_MAJOR" ] && [ ! -z "$TARGET_PHP_MINOR" ]; then
+    logMsg 7 "                   - Major: $TARGET_PHP_MAJOR"
+    logMsg 7 "                   - Minor: $TARGET_PHP_MINOR"
+else
+    echo "Target PHP Version syntax not recognised!" 1>&2
+    echo
+    showUsage
+    exit 2
+fi
+
+PHP_LATEST_STANDARD_VERSION=$(brew info php | grep -o -E "php(@\d+.\d+)?:\s+(\w+\s+)?\d+(.\d+)?" | grep -oE "[0-9]+(.[0-9]+)?$")
+phpMajMinVersionParse $PHP_LATEST_STANDARD_VERSION PHP_LATEST_STANDARD_VERSION_MAJOR PHP_LATEST_STANDARD_VERSION_MINOR
+logMsg 6 "Latest Standard PHP Version: $PHP_LATEST_STANDARD_VERSION"
+if [ ! -z "$PHP_LATEST_STANDARD_VERSION_MAJOR" ] && [ ! -z "$PHP_LATEST_STANDARD_VERSION_MINOR" ]; then
+    logMsg 7 "                             - Major: $PHP_LATEST_STANDARD_VERSION_MAJOR"
+    logMsg 7 "                             - Minor: $PHP_LATEST_STANDARD_VERSION_MINOR"
+else
+    echo "Latest standard PHP Version syntax not recognised!" 1>&2
+    echo
+    showUsage
+    exit 2
+fi
 
 logMsg 7 "Detecting currently active PHP versions (fpm & command line)"
-CURRENT_CMDLINE_VERSION=$(php -r "error_reporting(0); echo str_replace('.', '', substr(phpversion(), 0, 3));")
-CURRENT_FPM_VERSION=$(launchctl list | grep 'php[0-9]' | awk -F'[^0-9]*' '{print $3}')
+
+# Use PHP to determine the current PHP version
+CURRENT_CMDLINE_VERSION=$(php -r "error_reporting(0); echo substr(phpversion(), 0, 3);")
+
+# Use PHP to determine the current PHP version
+CURRENT_FPM_VERSION=$(launchctl list | grep -oE "php(@[0-9]+(.[0-9]+)?)?" | awk "{gsub(/php$/,\"php@$PHP_LATEST_STANDARD_VERSION\")}1" | sort -r)
+if [ ! -z "$CURRENT_FPM_VERSION" ];then
+    CURRENT_FPM_VERSION=${CURRENT_FPM_VERSION//php@/""}
+fi
 
 if [ -z "$CURRENT_CMDLINE_VERSION" ]; then
     echo "We had trouble detecting the current command line version of PHP, exiting:" 1>&2
@@ -150,22 +186,39 @@ if [ -z "$CURRENT_CMDLINE_VERSION" ]; then
 fi
 
 if [ "$CURRENT_CMDLINE_VERSION" != "$CURRENT_FPM_VERSION" ];then
-    logMsg 5 "Command line & FPM versions are out of sync: $CURRENT_CMDLINE_VERSION vs $CURRENT_FPM_VERSION respectively"
+    if [ ! -z "$CURRENT_FPM_VERSION" ]; then
+        logMsg 5 "Command line & FPM versions are out of sync: $CURRENT_CMDLINE_VERSION vs $CURRENT_FPM_VERSION respectively"
+    else
+        logMsg 5 "Command line & FPM versions are out of sync: $CURRENT_CMDLINE_VERSION vs N/A respectively"
+    fi
 else
     logMsg 7 "Command line and FPM versions are equal"
 fi
 
-CURRENT_CMDLINE_MAJOR=${CURRENT_CMDLINE_VERSION:0:1}
-CURRENT_CMDLINE_MINOR=${CURRENT_CMDLINE_VERSION:1:1}
+phpMajMinVersionParse $CURRENT_CMDLINE_VERSION CURRENT_CMDLINE_MAJOR CURRENT_CMDLINE_MINOR
+
+if [ -z "$CURRENT_CMDLINE_MAJOR" ] || [ -z "$CURRENT_CMDLINE_MINOR" ]; then
+    echo "PHP command line version syntax not recognised!" 1>&2
+    echo
+    showUsage
+    exit 2
+fi
 
 logMsg 6 "Found PHP versions:"
 logMsg 6 "  Command line version: $CURRENT_CMDLINE_VERSION"
 if [ -z "$CURRENT_FPM_VERSION" ]; then
     logMsg 6 "  FPM version:          N/A"
 else
+    phpMajMinVersionParse $CURRENT_FPM_VERSION CURRENT_FPM_MAJOR CURRENT_FPM_MINOR
+
+    if [ -z "$CURRENT_FPM_MAJOR" ] || [ -z "$CURRENT_FPM_MINOR" ]; then
+        echo "PHP FPM version syntax not recognised!" 1>&2
+        echo
+        showUsage
+        exit 2
+    fi
+
     logMsg 6 "  FPM version:          $CURRENT_FPM_VERSION"
-    CURRENT_FPM_MAJOR=${CURRENT_FPM_VERSION:0:1}
-    CURRENT_FPM_MINOR=${CURRENT_FPM_VERSION:1:1}
 fi
 
 if [ "$CURRENT_CMDLINE_VERSION" = "$TARGET_PHP_VERSION" ] && [ "$CURRENT_FPM_VERSION" = "$TARGET_PHP_VERSION" ];then
@@ -180,6 +233,8 @@ if [ "$CURRENT_CMDLINE_VERSION" = "$TARGET_PHP_VERSION" ] && [ "$CURRENT_FPM_VER
     done
 fi
 
+exit 0;
+
 declare -a CURRENT_PHP_PACKAGES
 declare -a TARGET_PHP_PACKAGES
 CURRENT_PHP_PACKAGES=($(brew list | grep php$CURRENT_CMDLINE_VERSION))
@@ -190,7 +245,7 @@ packages_to_link=$(IFS=' '; echo "${TARGET_PHP_PACKAGES[*]}")
 
 if [ $DO_DRY_RUN -eq 1 ];then
     echo "brew unlink $packages_to_unlink"
-    echo "brew link --force $packages_to_link"
+    echo "brew link --force --overwrite $packages_to_link"
 else
     if ! brew unlink $packages_to_unlink >/dev/null 2>&1; then
         echo "We had trouble unlinking the package set:" 1>&2
@@ -201,7 +256,7 @@ else
         logMsg 6 "  $packages_to_unlink"
     fi
 
-    if ! brew link --force $packages_to_link >/dev/null 2>&1; then
+    if ! brew link --force --overwrite $packages_to_link >/dev/null 2>&1; then
         echo "We had trouble linking the package set:" 1>&2
         echo "  $packages_to_link" 1>&2
         exit 1
