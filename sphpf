@@ -159,7 +159,7 @@ logMsg 6 "Detecting currently active PHP versions (PHP-FPM service & the command
 CURRENT_CMDLINE_VERSION=$(php -r "error_reporting(0); echo substr(phpversion(), 0, 3);")
 
 # Find the list of active PHP FPM services running
-CURRENT_FPM_VERSIONS=$(launchctl list | grep -oE "php(@[0-9]+(.[0-9]+)?)?" | awk "{gsub(/php$/,\"php@$PHP_LATEST_STANDARD_VERSION\")}1" | sort -r)
+CURRENT_FPM_VERSIONS=$(launchctl list | grep -oE "php(@[0-9]+(.[0-9]+)?)?$" | awk "{gsub(/php$/,\"php@$PHP_LATEST_STANDARD_VERSION\")}1" | sort -r)
 CURRENT_FPM_VERSIONS_FLAT=
 if [ ! -z "$CURRENT_FPM_VERSIONS" ];then
     CURRENT_FPM_VERSIONS=${CURRENT_FPM_VERSIONS//php@/""}
