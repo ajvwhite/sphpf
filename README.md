@@ -2,7 +2,7 @@ sphpf
 -----
 **A PHP environment and FPM version switcher for MacOS**
 
-This repository holds a utility script designed for those who are running MacOS, [Homebrew](https://brew.sh/), [NGINX](https://www.nginx.com/) and multiple versions of PHP (5.6, 7.0, 7.1 etc.).
+This repository holds a utility script designed for those who are running MacOS, [Homebrew](https://brew.sh/) and multiple versions of PHP (5.6, 7.0, 7.1 etc.).
 
 ## Installation:
 
@@ -36,20 +36,20 @@ You may need to restart your shell for this to take effect.
 
 ## Using it:
 
-The script will switch your environment's active PHP version (e.g. on the command line), and also in turn switch your (or startup, if it's not already running) PHP FPM instance to match the target version.
+The script will switch your environment's active PHP version (e.g. on the command line), and also in turn switch your (or startup, if it's not already running) PHP FPM service instance to match the target version.
 
 The version syntax, matches that of the postfix to the PHP versions on brew, e.g. for php56 = 56, php70 = 70, so for example:
 
 ```
-    #: sphpf 56
-    #: sphpf 70
-    #: sphpf 71
+    #: sphpf 5.6
+    #: sphpf 7.0
+    #: sphpf 7.1
 ```
 
 If you want to see what commands will be run, without the script actually taking action, you can also "Dry Run" the process, which will just outout the relevant commands, rather than run them, e.g.:
 
 ```
-sphpf -t 71
+sphpf -t 7.1
 ```
 
 ## Troubleshooting
