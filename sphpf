@@ -137,33 +137,23 @@ if [ $TARGET_FOUND -eq 0 ];then
     exit 2
 fi
 
-phpMajMinVersionParse $TARGET_PHP_VERSION TARGET_PHP_MAJOR TARGET_PHP_MINOR
-
 logMsg 6 "Requested version: $TARGET_PHP_VERSION"
-if [ ! -z "$TARGET_PHP_MAJOR" ] && [ ! -z "$TARGET_PHP_MINOR" ]; then
-    logMsg 7 "                   - Major: $TARGET_PHP_MAJOR"
-    logMsg 7 "                   - Minor: $TARGET_PHP_MINOR"
-else
-    echo "Target PHP Version syntax not recognised!" 1>&2
-    echo
-    showUsage
-    exit 2
-fi
 
+# Get the version of PHP that lives under the unversioned "php" pour
 PHP_LATEST_STANDARD_VERSION=$(brew info php | grep -o -E "php(@\d+.\d+)?:\s+(\w+\s+)?\d+(.\d+)?" | grep -oE "[0-9]+(.[0-9]+)?$")
+
+# Check the syntax of the version found...
 phpMajMinVersionParse $PHP_LATEST_STANDARD_VERSION PHP_LATEST_STANDARD_VERSION_MAJOR PHP_LATEST_STANDARD_VERSION_MINOR
-logMsg 6 "Latest Standard PHP Version: $PHP_LATEST_STANDARD_VERSION"
-if [ ! -z "$PHP_LATEST_STANDARD_VERSION_MAJOR" ] && [ ! -z "$PHP_LATEST_STANDARD_VERSION_MINOR" ]; then
-    logMsg 7 "                             - Major: $PHP_LATEST_STANDARD_VERSION_MAJOR"
-    logMsg 7 "                             - Minor: $PHP_LATEST_STANDARD_VERSION_MINOR"
-else
+if [ -z "$PHP_LATEST_STANDARD_VERSION_MAJOR" ] || [ -z "$PHP_LATEST_STANDARD_VERSION_MINOR" ]; then
     echo "Latest standard PHP Version syntax not recognised!" 1>&2
     echo
     showUsage
     exit 2
 fi
 
-logMsg 7 "Detecting currently active PHP versions (fpm & command line)"
+logMsg 6 "Latest Standard PHP Version: $PHP_LATEST_STANDARD_VERSION"
+
+logMsg 6 "Detecting currently active PHP versions (PHP-FPM service & the command line)"
 
 # Use PHP to determine the current PHP version
 CURRENT_CMDLINE_VERSION=$(php -r "error_reporting(0); echo substr(phpversion(), 0, 3);")
@@ -174,6 +164,7 @@ CURRENT_FPM_VERSIONS_FLAT=
 if [ ! -z "$CURRENT_FPM_VERSIONS" ];then
     CURRENT_FPM_VERSIONS=${CURRENT_FPM_VERSIONS//php@/""}
 
+    # Create a flattened version of the list for output (at the time of writing their MAY be more than one running at once)
     for phpActiveServiceVersion in ${CURRENT_FPM_VERSIONS//\\n/ }
     do
         if [ "$phpActiveServiceVersion" == "$PHP_LATEST_STANDARD_VERSION" ]; then
@@ -192,6 +183,7 @@ if [ ! -z "$CURRENT_FPM_VERSIONS" ];then
     done
 fi
 
+# Have we got at the very least a command line version?
 if [ -z "$CURRENT_CMDLINE_VERSION" ]; then
     echo "We had trouble detecting the current command line version of PHP, exiting:" 1>&2
     echo "  Command line version: N/A" 1>&2
@@ -205,16 +197,20 @@ fi
 
 if [ "$CURRENT_CMDLINE_VERSION" != "$CURRENT_FPM_VERSIONS" ];then
     if [ ! -z "$CURRENT_FPM_VERSIONS" ]; then
-        logMsg 5 "Command line & FPM versions are out of sync: $CURRENT_CMDLINE_VERSION vs PHP-FPM Services active: $CURRENT_FPM_VERSIONS_FLAT respectively"
+        logMsg 5 "Command line & PHP-FPM service versions are out of sync:"
+        logMsg 5 "         Command line version: $CURRENT_CMDLINE_VERSION"
+        logMsg 5 "    PHP-FPM Service(s) active: $CURRENT_FPM_VERSIONS_FLAT"
     else
-        logMsg 5 "Command line & FPM versions are out of sync: $CURRENT_CMDLINE_VERSION vs PHP-FPM Services active: N/A respectively"
+        logMsg 5 "Command line & PHP-FPM service versions are out of sync:"
+        logMsg 5 "         Command line version: $CURRENT_CMDLINE_VERSION"
+        logMsg 5 "    PHP-FPM Service(s) active: N/A"
     fi
 else
-    logMsg 7 "Command line and FPM versions are equal"
+    logMsg 7 "Command line and PHP-FPM service versions are equal"
 fi
 
+# Check the syntax of the command line version fetched
 phpMajMinVersionParse $CURRENT_CMDLINE_VERSION CURRENT_CMDLINE_MAJOR CURRENT_CMDLINE_MINOR
-
 if [ -z "$CURRENT_CMDLINE_MAJOR" ] || [ -z "$CURRENT_CMDLINE_MINOR" ]; then
     echo "PHP command line version syntax not recognised!" 1>&2
     echo
@@ -222,14 +218,16 @@ if [ -z "$CURRENT_CMDLINE_MAJOR" ] || [ -z "$CURRENT_CMDLINE_MINOR" ]; then
     exit 2
 fi
 
+# Log found versions
 logMsg 6 "Found PHP versions:"
 logMsg 6 "  Command line version: $CURRENT_CMDLINE_VERSION"
 if [ -z "$CURRENT_FPM_VERSIONS" ]; then
-    logMsg 6 "   FPM services active: N/A"
+    logMsg 6 " FPM service(s) active: N/A"
 else
-    logMsg 6 "   FPM services active: $CURRENT_FPM_VERSIONS_FLAT"
+    logMsg 6 " FPM service(s) active: $CURRENT_FPM_VERSIONS_FLAT"
 fi
 
+# If everything is already at target versions, prompt if they want to continue?
 if [ "$CURRENT_CMDLINE_VERSION" = "$TARGET_PHP_VERSION" ] && [ "$CURRENT_FPM_VERSIONS" = "$TARGET_PHP_VERSION" ];then
     echo "Detected that target version is already active."
     echo
@@ -242,6 +240,7 @@ if [ "$CURRENT_CMDLINE_VERSION" = "$TARGET_PHP_VERSION" ] && [ "$CURRENT_FPM_VER
     done
 fi
 
+# We are going to stop all active PHP-FPM services, as really we only want one running!
 if [ ! -z "$CURRENT_FPM_VERSIONS" ];then
     logMsg 6 "Stopping current PHP FPM services..."
     for phpServiceVersion in ${CURRENT_FPM_VERSIONS//\\n/ }
@@ -270,8 +269,10 @@ if [ ! -z "$CURRENT_FPM_VERSIONS" ];then
     done
 fi
 
+# Find the PHP pours to link and unlink
 declare -a CURRENT_PHP_PACKAGES
 declare -a TARGET_PHP_PACKAGES
+
 if [ "$CURRENT_CMDLINE_VERSION" == "$PHP_LATEST_STANDARD_VERSION" ]; then
     CURRENT_PHP_PACKAGES=($(brew list | grep -E "php[^@]*$"))
 else
@@ -300,6 +301,7 @@ else
         logMsg 6 "  $packages_to_unlink"
     fi
 
+    # The --force here is because the PHP versions are keg-only
     if ! brew link --force --overwrite $packages_to_link >/dev/null 2>&1; then
         echo "We had trouble linking the package set:" 1>&2
         echo "  $packages_to_link" 1>&2
@@ -309,7 +311,6 @@ else
         logMsg 6 "  $packages_to_link"
     fi
 fi
-
 logMsg 6 "Starting target PHP FPM service."
 if [ "$TARGET_PHP_VERSION" == "$PHP_LATEST_STANDARD_VERSION" ]; then
     if [ $DO_DRY_RUN -eq 1 ];then
@@ -336,6 +337,7 @@ fi
 if [ $DO_DRY_RUN -eq 0 ];then
     logMsg 6 "Process complete and PHP FPM and the command line should be running $TARGET_PHP_VERSION"
 fi
+
 echo "All Done!"
 
 exit 0
